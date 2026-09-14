@@ -118,6 +118,7 @@ local user_opts = {
     loop_button = true,                    -- show file loop button
     shuffle_button = false,                -- show shuffle button
     speed_button = true,                   -- show speed control button
+    show_quality_badge = true,             -- show the source video resolution beside the time codes
 
     buttons_always_active = "none",        -- force buttons to always be active. can add: playlist_prev, playlist_next
 
@@ -561,6 +562,8 @@ local function set_osc_styles()
         tooltip = "{\\bord1\\1c&HFFFFFF&\\3c&H0&\\fs" .. user_opts.tooltip_font_size .. "\\fn" .. user_opts.font .. "}",
         tooltip_box = "{\\1c&H" .. osc_color_convert(user_opts.osc_color) .. "&}",
         speed = "{\\bord1\\1c&H" .. osc_color_convert(user_opts.side_buttons_color) .. "&\\3c&H0&\\fs" .. user_opts.speed_font_size .. "\\fn" .. user_opts.font .. "}",
+        quality_badge_bg = "{\\blur0\\bord1\\shad0\\1c&H202020&\\3c&HAAAAAA&}",
+        quality_badge_text = "{\\bord0\\shad0\\1c&HFFFFFF&\\b1\\fs16\\fnSegoe UI}",
         volumebar_bg = "{\\1c&H999999&}",
         volumebar_fg = "{\\blur1\\bord1\\1c&H" .. osc_color_convert(user_opts.side_buttons_color) .. "&}",
         control_1 = "{\\1c&H" .. osc_color_convert(user_opts.playpause_color) .. "&\\fs" .. playpause_size .. "\\fn" .. icons.iconfont .. "}",
@@ -818,6 +821,28 @@ local function get_time_codes_width()
     local prefix = state.tc_left_rem and (user_opts.unicodeminus and UNICODE_MINUS or "-") or ""
     local w = estimate_text_width(prefix .. time_fmt(rt_sec) .. " / " .. time_fmt(dur), osc_styles.time)
     return w ~= 0 and w or 120 + (state.tc_ms and 40 or 0)
+end
+
+-- Classify the video's encoded resolution, never the scaled output window.
+-- Width-based tiers also recognize letterboxed films (e.g. 1920 x 800).
+local function get_video_quality_label()
+    local params = mp.get_property_native("video-params")
+    if type(params) ~= "table" then return nil end
+    local width = tonumber(params.w or params.dw)
+    local height = tonumber(params.h or params.dh)
+    if not width or not height or width <= 0 or height <= 0 then return nil end
+
+    local long_edge = math.max(width, height, math.min(width, height) * 16 / 9)
+    if long_edge >= 7680 then return "8K" end
+    if long_edge >= 5120 then return "5K" end
+    if long_edge >= 3840 then return "4K" end
+    if long_edge >= 2560 then return "1440p" end
+    if long_edge >= 1920 then return "1080p" end
+    if long_edge >= 1600 then return "900p" end
+    if long_edge >= 1280 then return "720p" end
+    if long_edge >= 850 then return "480p" end
+    if long_edge >= 640 then return "360p" end
+    return math.floor(math.min(width, height) + 0.5) .. "p"
 end
 
 -- returns hitbox spanning coordinates (top left, bottom right corner)
@@ -2340,6 +2365,37 @@ layouts["default"] = function ()
     lo.alpha[3] = 0
     lo.style = osc_styles.time
 
+    -- Resolution badge in the free space immediately after the time codes.
+    -- Reserve the entire centre control group so it never covers a button;
+    -- hide it in narrow windows where the time codes move above the bar.
+    local badge_w, badge_h = 78, 27
+    local badge_x = time_codes_x + time_codes_width + 22 + badge_w / 2
+    local centre_reservation = 24
+        + (user_opts.jump_buttons and 60 or 0)
+        + (chapter_skip_buttons and 60 or 0)
+        + (user_opts.track_nextprev_buttons and state.playlist_count > 1 and 60 or 0)
+    local badge_visible = user_opts.show_quality_badge and not state.is_image
+        and not narrow_win and get_video_quality_label() ~= nil
+        and badge_x + badge_w / 2 + 16 < refX - centre_reservation
+
+    elements["quality_badge_bg"].visible = badge_visible
+    elements["quality_badge_text"].visible = badge_visible
+    if badge_visible then
+        local badge_y = refY - (user_opts.osc_height / 2)
+        lo = add_layout("quality_badge_bg")
+        lo.geometry = {x = badge_x, y = badge_y, an = 5, w = badge_w, h = badge_h}
+        lo.box.radius = 7
+        lo.layer = 46
+        lo.style = osc_styles.quality_badge_bg
+        lo.alpha[1] = 0x52
+        lo.alpha[3] = 0x99
+
+        lo = add_layout("quality_badge_text")
+        lo.geometry = {x = badge_x, y = badge_y, an = 5, w = badge_w, h = badge_h}
+        lo.layer = 48
+        lo.style = osc_styles.quality_badge_text
+    end
+
     -- center buttons
     if user_opts.track_nextprev_buttons then
         elements["playlist_prev"].visible = (state.playlist_count > 1 or contains(user_opts.buttons_always_active, "playlist_prev")) and (osc_param.playresx >= 500 - outeroffset)
@@ -3646,6 +3702,12 @@ local function osc_init()
         request_init()
     end
 
+    -- Display-only badge: resolution comes from the source video and updates
+    -- when the active video track changes. Neither piece captures mouse clicks.
+    new_element("quality_badge_bg", "box")
+    ne = new_element("quality_badge_text", "button")
+    ne.content = function() return get_video_quality_label() or "" end
+
     -- load layout
     if state.is_image then
         layouts["modern-image"]()
@@ -4187,6 +4249,7 @@ mp.register_event("start-file", function()
     request_init()
 end)
 mp.observe_property("track-list", "native", update_tracklist)
+mp.observe_property("video-params", "native", request_init)
 observe_cached("playlist-count", request_init)
 observe_cached("playlist-pos-1", request_init)
 observe_cached("chapter-list", function ()
