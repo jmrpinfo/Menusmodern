@@ -1,11 +1,19 @@
 local mp = require "mp"
 local assdraw = require "mp.assdraw"
+local options = require "mp.options"
 
 local overlay = mp.create_osd_overlay("ass-events")
 overlay.z = 900 -- ModernZ remains visible above the dashboard when hovered.
 
 local visible = false
 local timer = nil
+
+local user_opts = {
+    -- auto follows the operating-system UI language. It can also be forced
+    -- to pt, en or es in script-opts/modern_stats.conf.
+    language = "auto",
+}
+options.read_options(user_opts, "modern_stats")
 
 local COLORS = {
     panel = "#080808",
@@ -19,6 +27,116 @@ local COLORS = {
     bad = "#F05D5E",
     neutral = "#78A9FF",
 }
+
+local LANGUAGES = {
+    en = {
+        panel_title = "PLAYBACK DASHBOARD",
+        file_title = "FILE", file_subtitle = "Source and storage",
+        playback_title = "PLAYBACK", playback_subtitle = "Sync and stability",
+        video_title = "VIDEO", video_subtitle = "Picture and decoding",
+        audio_title = "AUDIO", audio_subtitle = "Sound and output device",
+        size = "Size", container = "Container", cache = "Cache", duration = "Duration",
+        state = "State", av_sync = "A/V sync", dropped_frames = "Dropped frames",
+        display = "Display", rendering = "Rendering", codec = "Codec",
+        resolution = "Resolution", frame_rate = "Frame rate", acceleration = "Acceleration",
+        pixel_format = "Pixel format", bitrate = "Bitrate", color = "Color",
+        channels = "Channels", sample_rate = "Sample rate", output = "Output", volume = "Volume",
+        no_cache = "No cache", seconds_ahead = "%.1f s ahead", minutes_ahead = "%d min %02d s ahead",
+        perfect = "Perfect", decoding_output = "decoding %d / output %d",
+        synchronized = "Synchronized", slight_difference = "Slight difference", out_of_sync = "Out of sync",
+        disabled_f = "Disabled", active_f = "Active", loading = "Loading", paused = "Paused", playing = "Playing",
+        no_file = "No file loaded", muted = "Muted", stereo = "Stereo", mono = "Mono", surround = "Surround",
+        close_hint = "ⓘ again or Esc to close", auto_update = "Automatic update",
+    },
+    pt = {
+        panel_title = "PAINEL DE REPRODUÇÃO",
+        file_title = "ARQUIVO", file_subtitle = "Origem e armazenamento",
+        playback_title = "REPRODUÇÃO", playback_subtitle = "Sincronia e estabilidade",
+        video_title = "VÍDEO", video_subtitle = "Imagem e decodificação",
+        audio_title = "ÁUDIO", audio_subtitle = "Som e dispositivo de saída",
+        size = "Tamanho", container = "Contêiner", cache = "Cache", duration = "Duração",
+        state = "Estado", av_sync = "Sincronização A/V", dropped_frames = "Quadros perdidos",
+        display = "Tela", rendering = "Renderização", codec = "Codec",
+        resolution = "Resolução", frame_rate = "Taxa de quadros", acceleration = "Aceleração",
+        pixel_format = "Formato de pixel", bitrate = "Bitrate", color = "Cor",
+        channels = "Canais", sample_rate = "Amostragem", output = "Saída", volume = "Volume",
+        no_cache = "Sem cache", seconds_ahead = "%.1f s à frente", minutes_ahead = "%d min %02d s à frente",
+        perfect = "Perfeito", decoding_output = "decodificação %d / saída %d",
+        synchronized = "Sincronizado", slight_difference = "Pequena diferença", out_of_sync = "Fora de sincronia",
+        disabled_f = "Desativada", active_f = "Ativa", loading = "Carregando", paused = "Pausado", playing = "Reproduzindo",
+        no_file = "Nenhum arquivo carregado", muted = "Mudo", stereo = "Estéreo", mono = "Mono", surround = "Surround",
+        close_hint = "ⓘ novamente ou Esc para fechar", auto_update = "Atualização automática",
+    },
+    es = {
+        panel_title = "PANEL DE REPRODUCCIÓN",
+        file_title = "ARCHIVO", file_subtitle = "Origen y almacenamiento",
+        playback_title = "REPRODUCCIÓN", playback_subtitle = "Sincronía y estabilidad",
+        video_title = "VÍDEO", video_subtitle = "Imagen y decodificación",
+        audio_title = "AUDIO", audio_subtitle = "Sonido y dispositivo de salida",
+        size = "Tamaño", container = "Contenedor", cache = "Caché", duration = "Duración",
+        state = "Estado", av_sync = "Sincronización A/V", dropped_frames = "Fotogramas perdidos",
+        display = "Pantalla", rendering = "Renderizado", codec = "Códec",
+        resolution = "Resolución", frame_rate = "Tasa de fotogramas", acceleration = "Aceleración",
+        pixel_format = "Formato de píxel", bitrate = "Tasa de bits", color = "Color",
+        channels = "Canales", sample_rate = "Muestreo", output = "Salida", volume = "Volumen",
+        no_cache = "Sin caché", seconds_ahead = "%.1f s por delante", minutes_ahead = "%d min %02d s por delante",
+        perfect = "Perfecto", decoding_output = "decodificación %d / salida %d",
+        synchronized = "Sincronizado", slight_difference = "Pequeña diferencia", out_of_sync = "Fuera de sincronía",
+        disabled_f = "Desactivada", active_f = "Activa", loading = "Cargando", paused = "Pausado", playing = "Reproduciendo",
+        no_file = "Ningún archivo cargado", muted = "Silenciado", stereo = "Estéreo", mono = "Mono", surround = "Envolvente",
+        close_hint = "ⓘ de nuevo o Esc para cerrar", auto_update = "Actualización automática",
+    },
+}
+
+local function normalize_language(value)
+    value = tostring(value or ""):lower():gsub("_", "-")
+    local prefix = value:match("^%s*([a-z][a-z])")
+    if LANGUAGES[prefix] then return prefix end
+    return nil
+end
+
+local function subprocess_output(args)
+    local ok, result = pcall(mp.command_native, {
+        name = "subprocess",
+        playback_only = false,
+        capture_stdout = true,
+        capture_stderr = false,
+        args = args,
+    })
+    if not ok or type(result) ~= "table" or result.status ~= 0 then return nil end
+    return tostring(result.stdout or ""):match("^%s*(.-)%s*$")
+end
+
+local function detect_system_language()
+    for _, variable in ipairs({"LC_ALL", "LC_MESSAGES", "LANGUAGE", "LANG"}) do
+        local detected = normalize_language(os.getenv(variable))
+        if detected then return detected end
+    end
+
+    local platform = tostring(mp.get_property("platform", "") or ""):lower()
+    local locale
+    if platform == "windows" then
+        locale = subprocess_output({
+            "powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+            "[System.Globalization.CultureInfo]::CurrentUICulture.Name",
+        })
+    elseif platform == "darwin" or platform == "macos" then
+        locale = subprocess_output({"defaults", "read", "-g", "AppleLocale"})
+    end
+    return normalize_language(locale) or "en"
+end
+
+local selected_language = normalize_language(user_opts.language)
+if tostring(user_opts.language):lower() == "auto" or not selected_language then
+    selected_language = detect_system_language()
+end
+local locale = LANGUAGES[selected_language] or LANGUAGES.en
+
+local function tr(key, ...)
+    local value = locale[key] or LANGUAGES.en[key] or key
+    if select("#", ...) > 0 then return string.format(value, ...) end
+    return value
+end
 
 local function clamp(value, minimum, maximum)
     return math.max(minimum, math.min(maximum, value))
@@ -96,9 +214,9 @@ end
 
 local function format_duration(seconds)
     seconds = tonumber(seconds)
-    if not seconds or seconds <= 0 then return "Sem cache" end
-    if seconds < 60 then return string.format("%.1f s à frente", seconds) end
-    return string.format("%d min %02d s à frente", math.floor(seconds / 60), math.floor(seconds % 60))
+    if not seconds or seconds <= 0 then return tr("no_cache") end
+    if seconds < 60 then return tr("seconds_ahead", seconds) end
+    return tr("minutes_ahead", math.floor(seconds / 60), math.floor(seconds % 60))
 end
 
 local function aspect_label(width, height)
@@ -139,9 +257,9 @@ end
 local function channel_label(channels)
     channels = tostring(channels or "")
     local names = {
-        stereo = "2.0 · Estéreo", mono = "1.0 · Mono",
-        ["2"] = "2.0 · Estéreo", ["1"] = "1.0 · Mono",
-        ["5.1"] = "5.1 · Surround", ["7.1"] = "7.1 · Surround",
+        stereo = "2.0 · " .. tr("stereo"), mono = "1.0 · " .. tr("mono"),
+        ["2"] = "2.0 · " .. tr("stereo"), ["1"] = "1.0 · " .. tr("mono"),
+        ["5.1"] = "5.1 · " .. tr("surround"), ["7.1"] = "7.1 · " .. tr("surround"),
     }
     return names[channels] or (channels ~= "" and channels or "—")
 end
@@ -192,24 +310,26 @@ local function collect_data()
     local output_drops = number("frame-drop-count", 0)
     local total_drops = decoder_drops + output_drops
     local drop_color = total_drops == 0 and COLORS.good or (total_drops < 10 and COLORS.warning or COLORS.bad)
-    local drop_value = total_drops == 0 and "0 · Perfeito" or string.format("%d · decodificação %d / saída %d", total_drops, decoder_drops, output_drops)
+    local drop_value = total_drops == 0 and ("0 · " .. tr("perfect"))
+        or string.format("%d · %s", total_drops, tr("decoding_output", decoder_drops, output_drops))
 
     local avsync = number("avsync", 0)
     local av_abs = math.abs(avsync)
     local av_color = av_abs < 0.04 and COLORS.good or (av_abs < 0.10 and COLORS.warning or COLORS.bad)
-    local av_state = av_abs < 0.04 and "Sincronizado" or (av_abs < 0.10 and "Pequena diferença" or "Fora de sincronia")
+    local av_state = av_abs < 0.04 and tr("synchronized")
+        or (av_abs < 0.10 and tr("slight_difference") or tr("out_of_sync"))
     local av_value = string.format("%+.4f s · %s", avsync, av_state)
 
-    local hwdec = property("hwdec-current", "Desativada")
-    local hw_color = hwdec == "Desativada" and COLORS.warning or COLORS.good
-    if hwdec ~= "Desativada" then hwdec = hwdec:upper() .. " · Ativa" end
+    local hwdec = property("hwdec-current", tr("disabled_f"))
+    local hw_color = hwdec == tr("disabled_f") and COLORS.warning or COLORS.good
+    if hwdec ~= tr("disabled_f") then hwdec = hwdec:upper() .. " · " .. tr("active_f") end
 
     local pause = native("pause", false)
     local paused_cache = native("paused-for-cache", false)
-    local playback_state = paused_cache and "Carregando" or (pause and "Pausado" or "Reproduzindo")
+    local playback_state = paused_cache and tr("loading") or (pause and tr("paused") or tr("playing"))
     local playback_color = paused_cache and COLORS.warning or (pause and COLORS.neutral or COLORS.good)
 
-    local filename = basename(property("filename", "Nenhum arquivo carregado"))
+    local filename = basename(property("filename", tr("no_file")))
     local container = property("file-format", property("demuxer", "—")):upper()
     local cache_duration = cache["cache-duration"] or number("demuxer-cache-duration", 0)
 
@@ -231,7 +351,7 @@ local function collect_data()
     local channels = audio["hr-channels"] or audio["channel-count"] or audio.channels or property("audio-params/hr-channels", "—")
     local volume = number("volume", 0)
     local muted = native("mute", false)
-    local volume_value = muted and string.format("%.0f%% · Mudo", volume) or string.format("%.0f%%", volume)
+    local volume_value = muted and string.format("%.0f%% · %s", volume, tr("muted")) or string.format("%.0f%%", volume)
     local volume_color = muted and COLORS.bad or (volume > 100 and COLORS.warning or COLORS.text)
 
     return {
@@ -239,34 +359,34 @@ local function collect_data()
         header_status = playback_state,
         header_color = playback_color,
         file = {
-            {"Tamanho", format_bytes(number("file-size", 0))},
-            {"Contêiner", container},
-            {"Cache", format_duration(cache_duration)},
-            {"Duração", property("duration", "—") ~= "—" and mp.format_time(number("duration", 0)) or "—"},
+            {tr("size"), format_bytes(number("file-size", 0))},
+            {tr("container"), container},
+            {tr("cache"), format_duration(cache_duration)},
+            {tr("duration"), property("duration", "—") ~= "—" and mp.format_time(number("duration", 0)) or "—"},
         },
         playback = {
-            {"Estado", playback_state, playback_color},
-            {"Sincronização A/V", av_value, av_color},
-            {"Quadros perdidos", drop_value, drop_color},
-            {"Tela", format_hz(display_fps)},
-            {"Renderização", renderer},
+            {tr("state"), playback_state, playback_color},
+            {tr("av_sync"), av_value, av_color},
+            {tr("dropped_frames"), drop_value, drop_color},
+            {tr("display"), format_hz(display_fps)},
+            {tr("rendering"), renderer},
         },
         video = {
-            {"Codec", friendly_video_codec(property("video-codec", ""))},
-            {"Resolução", resolution},
-            {"Taxa de quadros", format_fps(source_fps)},
-            {"Aceleração", hwdec, hw_color},
-            {"Formato de pixel", property("video-params/pixelformat", video.pixelformat or "—")},
-            {"Bitrate", format_bitrate(number("video-bitrate", 0))},
-            {"Cor", #color_info > 0 and table.concat(color_info, " · ") or "—"},
+            {tr("codec"), friendly_video_codec(property("video-codec", ""))},
+            {tr("resolution"), resolution},
+            {tr("frame_rate"), format_fps(source_fps)},
+            {tr("acceleration"), hwdec, hw_color},
+            {tr("pixel_format"), property("video-params/pixelformat", video.pixelformat or "—")},
+            {tr("bitrate"), format_bitrate(number("video-bitrate", 0))},
+            {tr("color"), #color_info > 0 and table.concat(color_info, " · ") or "—"},
         },
         audio = {
-            {"Codec", friendly_audio_codec(property("audio-codec", ""))},
-            {"Canais", channel_label(channels)},
-            {"Amostragem", sample_rate > 0 and string.format("%.1f kHz", sample_rate / 1000) or "—"},
-            {"Bitrate", format_bitrate(number("audio-bitrate", 0))},
-            {"Saída", property("current-ao", "—")},
-            {"Volume", volume_value, volume_color},
+            {tr("codec"), friendly_audio_codec(property("audio-codec", ""))},
+            {tr("channels"), channel_label(channels)},
+            {tr("sample_rate"), sample_rate > 0 and string.format("%.1f kHz", sample_rate / 1000) or "—"},
+            {tr("bitrate"), format_bitrate(number("audio-bitrate", 0))},
+            {tr("output"), property("current-ao", "—")},
+            {tr("volume"), volume_value, volume_color},
         },
     }
 end
@@ -334,7 +454,7 @@ local function render()
 
     append_box(ass, inner_x1, header_y, inner_x1 + 38, header_y + 38, 19, COLORS.accent, 0)
     append_text(ass, inner_x1 + 19, header_y + 19, "i", 24, COLORS.text, true, 5)
-    append_text(ass, inner_x1 + 52, header_y + 3, "PAINEL DE REPRODUÇÃO", 22, COLORS.text, true, 7)
+    append_text(ass, inner_x1 + 52, header_y + 3, tr("panel_title"), 22, COLORS.text, true, 7)
     append_text(ass, inner_x1 + 52, header_y + 34, data.filename, 14, COLORS.muted, false, 7,
         {inner_x1 + 52, header_y + 23, inner_x2 - 190, header_y + 48})
     draw_status_pill(ass, inner_x2, header_y + 19, data.header_status, data.header_color, 13)
@@ -356,18 +476,18 @@ local function render()
     local second_y2 = cards_bottom
 
     draw_card(ass, left_x1, first_y1, left_x2, first_y2,
-        "ARQUIVO", "Origem e armazenamento", data.file)
+        tr("file_title"), tr("file_subtitle"), data.file)
     draw_card(ass, right_x1, first_y1, right_x2, first_y2,
-        "REPRODUÇÃO", "Sincronia e estabilidade", data.playback)
+        tr("playback_title"), tr("playback_subtitle"), data.playback)
     draw_card(ass, left_x1, second_y1, left_x2, second_y2,
-        "VÍDEO", "Imagem e decodificação", data.video)
+        tr("video_title"), tr("video_subtitle"), data.video)
     draw_card(ass, right_x1, second_y1, right_x2, second_y2,
-        "ÁUDIO", "Som e dispositivo de saída", data.audio)
+        tr("audio_title"), tr("audio_subtitle"), data.audio)
 
     append_text(ass, inner_x1, bottom - 24,
-        "ⓘ novamente ou Esc para fechar", 12, COLORS.dim, false, 7)
+        tr("close_hint"), 12, COLORS.dim, false, 7)
     append_text(ass, inner_x2, bottom - 24,
-        "Atualização automática", 12, COLORS.dim, false, 9)
+        tr("auto_update"), 12, COLORS.dim, false, 9)
 
     overlay.res_x = res_x
     overlay.res_y = res_y
